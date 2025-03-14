@@ -120,7 +120,8 @@ impl Cpu
             }
             0x18 => {
                 let displacement = memory[self.pc as usize + 1] as i8; // Read the signed displacement (next byte)
-                self.pc = self.pc.wrapping_add(2) + displacement as u16; // Jump to the new address
+                self.pc = self.pc.wrapping_add(1); // Increment PC past the displacement byte
+                self.pc = self.pc.wrapping_add(displacement as u16); // Add the displacement to the PC
                 println!("Executing JR r8 at PC={:#06x}, Jumping to {:#06x}", self.pc, self.pc);
             }
             0xf5 => {
@@ -157,6 +158,117 @@ impl Cpu
                 // LD C, L copies L into C
                 self.c = self.l;
                 println!("Executing LD C, L at PC={:#06x}, C = {}", self.pc, self.c);
+            }
+            0x03 => { // INC BC (Increment BC)
+                // Combine B and C into a 16-bit value
+                let mut bc = ((self.b as u16) << 8) | (self.c as u16);
+                
+                // Increment BC, using wrapping_add to handle overflow
+                bc = bc.wrapping_add(1);
+                
+                // Split back into separate registers
+                self.b = (bc >> 8) as u8;
+                self.c = (bc & 0xFF) as u8;
+                
+                println!("Executing INC BC at PC={:#06x}, BC now {:#06x}", self.pc, bc);
+            }
+            0x79 => { // LD A, C (Load C into A)
+                self.a = self.c;
+                println!("Executing LD A, C at PC={:#06x}, A now {:#04x}", self.pc, self.a);
+            }
+            0xc1 => { // POP BC (Pop BC from stack)
+                // Read from stack memory at current SP location
+                let c = memory[self.sp as usize]; // Low byte
+                let b = memory[(self.sp + 1) as usize]; // High byte
+                
+                // Update BC registers
+                self.c = c;
+                self.b = b;
+                
+                // Increment SP by 2 bytes
+                self.sp = self.sp.wrapping_add(2);
+                
+                println!("Executing POP BC at PC={:#06x}, BC now {:#02x}{:02x}", self.pc, self.b, self.c);
+            }
+            0xc9 => { // RET (Return from subroutine)
+                // Read return address from stack
+                let low = memory[self.sp as usize]; // Lower byte of address
+                let high = memory[(self.sp + 1) as usize]; // Higher byte of address
+                
+                // Combine into 16-bit address
+                let address = ((high as u16) << 8) | (low as u16);
+                
+                // Set PC to the return address
+                self.pc = address;
+                
+                // Increment SP by 2 bytes
+                self.sp = self.sp.wrapping_add(2);
+                
+                println!("Executing RET at PC={:#06x}, returning to address {:#06x}", self.pc, address);
+            }
+            0x7E => { // LD A, (HL) (Load value at address in HL into A)
+                // Combine H and L into a 16-bit address
+                let hl_addr = ((self.h as u16) << 8) | (self.l as u16);
+                
+                // Read from memory at the address in HL
+                self.a = memory[hl_addr as usize];
+                
+                println!("Executing LD A, (HL) at PC={:#06x}, loading A={:#04x} from address {:#06x}", 
+                         self.pc, self.a, hl_addr);
+            }
+            0x0C => { // INC C (Increment C)
+                // Save original value for flag checking
+                let original = self.c;
+                
+                // Increment C with wrapping
+                self.c = self.c.wrapping_add(1);
+                
+                // Update flags:
+                // Z flag - Set if result is zero
+                if self.c == 0 {
+                    self.f = self.f | 0x80; // Set bit 7 (Z flag)
+                } else {
+                    self.f = self.f & 0x7F; // Reset bit 7 (Z flag)
+                }
+                
+                // N flag - Reset (bit 6)
+                self.f = self.f & 0xBF; // Reset bit 6 (N flag)
+                
+                // H flag - Set if carry from bit 3 to bit 4
+                if (original & 0x0F) == 0x0F {
+                    self.f = self.f | 0x20; // Set bit 5 (H flag)
+                } else {
+                    self.f = self.f & 0xDF; // Reset bit 5 (H flag)
+                }
+                
+                // C flag - Not affected
+                
+                println!("Executing INC C at PC={:#06x}, C now {:#04x}, flags={:#04x}", 
+                         self.pc, self.c, self.f);
+            }
+            0x60 => { // LD H, B (Load B into H)
+                self.h = self.b;
+                println!("Executing LD H, B at PC={:#06x}, H now {:#04x}", self.pc, self.h);
+            }
+            0x06 => { // LD B, n (Load immediate value into B)
+                println!("Executing LD B, n at PC={:#06x}", self.pc);
+                self.b = memory[self.pc as usize]; // Load the immediate value into B
+                self.pc += 1; // Move past the immediate byte
+            }
+            0x66 => { // LD H, (HL) (Load value at address HL into H)
+                // Combine H and L into a 16-bit address (HL)
+                let hl_addr = ((self.h as u16) << 8) | (self.l as u16);
+                
+                // Load value from memory at address HL into H
+                self.h = memory[hl_addr as usize];
+                
+                println!("Executing LD H, (HL) at PC={:#06x}, loading H={:#04x} from address {:#06x}", 
+                         self.pc, self.h, hl_addr);
+            }
+            0x3C => { // INC A (Increment A by 1)
+                self.a = self.a.wrapping_add(1); // Use wrapping_add to avoid overflow issues
+                self.pc = self.pc.wrapping_add(1); // Increment PC to move to the next instruction
+                println!("Executing INC A at PC={:#06x}, A={:#04x}", self.pc, self.a);
             }
             _ => {
                 panic!("Unknown opcode: {:#04x} at PC={:#06x}", opcode,self.pc);
