@@ -11,7 +11,7 @@ fn main()
     let mut memory = [0u8; 0x10000];
 
     // Load the ROM
-    let mut file = File::open("cpu_instrs.gb").expect("Failed to open test ROM");
+    let mut file = File::open("C:\\Projects\\InViSiB0Y\\gb-test-roms-master\\cpu_instrs\\cpu_instrs.gb").expect("Failed to open test ROM");
     file.read_exact(&mut memory[..])
         .expect("Failed to load ROM into memory");
 
@@ -19,7 +19,8 @@ fn main()
     println!("First 16 bytes of ROM: {:?}", &memory[0..16]);
 
     // Run the CPU through the steps
-    while cpu.pc < 0x100 {
-        cpu.step(&memory);
+    loop 
+    {
+        cpu.step(&mut memory);
     }
 }
