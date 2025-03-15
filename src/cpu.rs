@@ -13,6 +13,8 @@ pub struct Cpu
     pub sp: u16, // Stack Pointer
     pub pc: u16, // Program Counter
     pub ime: bool, // Interrupt Master Enable
+    pub debug_mode: bool, // Debug mode
+    pub halted: bool // CPU is halted
 }
 
 impl Cpu 
@@ -33,14 +35,16 @@ impl Cpu
             sp: 0xFFFE, // Stack pointer starts at 0xFFFE
             pc: 0x100,  // Program counter starts at 0x100 (after boot ROM)
             ime: false, // Interrupts are disabled by default
+            debug_mode: false,  // Initialize to false by default
+            halted: false // Initialize to false by default
         }
     }
 
-    pub fn fetch(&mut self, memory: &[u8]) -> u8 
-    {
-        let opcode = memory[self.pc as usize]; 
+    pub fn fetch(&mut self, memory: &[u8]) -> u8 {
+        let opcode = memory[self.pc as usize];
         println!("Fetching opcode {:#04x} at PC={:#06x}", opcode, self.pc);
-        self.pc += 1; // Move to the next instruction
+        println!("Fetch: Reading byte at PC={:#06x}, value={:#04x}", self.pc, opcode);
+        self.pc = self.pc.wrapping_add(1);  // Move to the next instruction
         opcode
     }
 
@@ -217,10 +221,20 @@ impl Cpu
                 println!("Executing LD E, {:#04x} at PC={:#06x}", self.e, self.pc);
             }
             0x1F => { // RRA
-                let carry = self.a & 1;
-                self.a = (self.a >> 1) | (self.f << 7);
-                self.f = carry << 4;
-                println!("Executing RRA at PC={:#06x}", self.pc);
+                // Get bit 0 of A (will become carry flag)
+                let bit0 = self.a & 0x01;
+                
+                // Get current carry flag (bit 4 of F)
+                let old_carry = (self.f & 0x10) >> 4;
+                
+                // Rotate right through carry
+                self.a = (self.a >> 1) | (old_carry << 7);
+                
+                // Update flags - Z is reset, N is reset, H is reset, C gets bit 0 of original A
+                self.f = 0;  // Clear all flags
+                if bit0 != 0 { self.f |= 0x10; }  // Set C flag if bit 0 was set
+    
+    println!("Executing RRA at PC={:#06x}", self.pc);
             }
             0x20 => { // JR NZ, n
                 let offset = memory[self.pc as usize] as i8;
@@ -316,11 +330,18 @@ impl Cpu
             }
             0x30 => { // JR NC, n
                 let offset = memory[self.pc as usize] as i8;
-                if self.f & 0x10 == 0 {
+    
+                // Explicitly check bit 4 (carry flag)
+                let carry_set = (self.f & 0x10) != 0;
+                
+                println!("JR NC: F={:#04x}, bit 4={}, jumping={}", self.f, carry_set, !carry_set);
+                
+                if !carry_set {
                     self.pc = self.pc.wrapping_add(1).wrapping_add(offset as u16);
                 } else {
                     self.pc += 1;
                 }
+                
                 println!("Executing JR NC, {:#04x} at PC={:#06x}", offset, self.pc);
             }
             0x31 => { // LD SP, nn
@@ -630,6 +651,8 @@ impl Cpu
             }
             0x76 => { // HALT
                 println!("Executing HALT at PC={:#06x}", self.pc);
+                // Actually halt the CPU
+                self.halted = true;
             }
             0x77 => { // LD (HL), A
                 let addr = (self.h as u16) << 8 | self.l as u16;
@@ -816,52 +839,125 @@ impl Cpu
                 println!("Executing SUB A at PC={:#06x}", self.pc);
             }
             0x98 => { // SBC A, B
-                let (result, carry) = self.a.overflowing_sub(self.b.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;  // Get current carry flag
+    
+                // Store original A for comparison
+                let original_a = self.a;
+                let total_subtract = self.b.wrapping_add(carry_bit);
+                
+                // Borrow occurs if A < (B + carry)
+                let borrow = original_a < total_subtract;
+                
+                // Perform subtraction with carry
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                // Set flags
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }  // Z flag
+                self.f |= 0x40;                      // N flag always set for subtraction
+                if borrow { self.f |= 0x10; }        // C flag if borrow needed
+                
                 println!("Executing SBC A, B at PC={:#06x}", self.pc);
             }
             0x99 => { // SBC A, C
-                let (result, carry) = self.a.overflowing_sub(self.c.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;
+                let original_a = self.a;
+                let total_subtract = self.c.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, C at PC={:#06x}", self.pc);
             }
             0x9A => { // SBC A, D
-                let (result, carry) = self.a.overflowing_sub(self.d.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;
+                let original_a = self.a;
+                let total_subtract = self.d.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, D at PC={:#06x}", self.pc);
             }
             0x9B => { // SBC A, E
-                let (result, carry) = self.a.overflowing_sub(self.e.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;
+                let original_a = self.a;
+                let total_subtract = self.e.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, E at PC={:#06x}", self.pc);
             }
             0x9C => { // SBC A, H
-                let (result, carry) = self.a.overflowing_sub(self.h.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;
+                let original_a = self.a;
+                let total_subtract = self.h.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, H at PC={:#06x}", self.pc);
             }
             0x9D => { // SBC A, L
-                let (result, carry) = self.a.overflowing_sub(self.l.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;
+                let original_a = self.a;
+                let total_subtract = self.l.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, L at PC={:#06x}", self.pc);
             }
             0x9E => { // SBC A, (HL)
                 let addr = (self.h as u16) << 8 | self.l as u16;
-                let (result, carry) = self.a.overflowing_sub(memory[addr as usize].wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let value = memory[addr as usize];
+                let carry_bit = (self.f & 0x10) >> 4;
+                
+                let original_a = self.a;
+                let total_subtract = value.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, (HL) at PC={:#06x}", self.pc);
             }
             0x9F => { // SBC A, A
-                let (result, carry) = self.a.overflowing_sub(self.a.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;
+                let original_a = self.a;
+                let total_subtract = self.a.wrapping_add(carry_bit);
+                let borrow = original_a < total_subtract;
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }
+                self.f |= 0x40;
+                if borrow { self.f |= 0x10; }
+                
                 println!("Executing SBC A, A at PC={:#06x}", self.pc);
             }
             0xA0 => { // AND B
@@ -1105,9 +1201,19 @@ impl Cpu
                 }
                 println!("Executing JP Z, nn at PC={:#06x}", self.pc);
             }
-        
-              // 0xCB prefix, kind of a weird situation, TODO
-              
+            0xCB => {
+
+                // Fetch the next byte after CB using fetch(), not direct memory access
+                let cb_opcode = self.fetch(memory);  // This will get the byte and increment PC
+
+                if self.debug_mode 
+                {
+                    println!("Executing CB opcode {:#04x} at PC={:#06x}", cb_opcode, self.pc - 1);
+                } 
+
+                // Execute the CB-prefixed instruction and return its cycles
+                 let _ = self.execute_cb(cb_opcode, memory);
+            }
             0xCC => { // CALL Z, nn
                 let lo = self.fetch(memory);
                 let hi = self.fetch(memory);
@@ -1128,9 +1234,19 @@ impl Cpu
             }
             0xCE => { // ADC A, n
                 let n = self.fetch(memory);
-                let (result, carry) = self.a.overflowing_add(n.wrapping_add(self.f >> 4));
+                let carry_bit = (self.f & 0x10) >> 4;  // Get current carry flag
+                
+                // Do addition with carry
+                let (temp, carry1) = self.a.overflowing_add(n);
+                let (result, carry2) = temp.overflowing_add(carry_bit);
+                
                 self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | if carry { 0x10 } else { 0 };
+                
+                // Set flags
+                self.f = 0;
+                if result == 0 { self.f |= 0x80; }           // Z flag
+                if carry1 || carry2 { self.f |= 0x10; }      // C flag
+                
                 println!("Executing ADC A, n at PC={:#06x}", self.pc);
             }
             0xCF => { // RST 08H
@@ -1177,9 +1293,19 @@ impl Cpu
             }
             0xD6 => { // SUB n
                 let n = self.fetch(memory);
-                let (result, carry) = self.a.overflowing_sub(n);
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+    
+                // Store original A for comparison BEFORE doing the subtraction
+                let original_a = self.a;
+                
+                // Perform subtraction
+                self.a = self.a.wrapping_sub(n);
+                
+                // Set flags
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }    // Z flag (bit 7)
+                self.f |= 0x40;                        // N flag (bit 6) always set for subtraction
+                if original_a < n { self.f |= 0x10; }  // C flag (bit 4) set if borrow needed
+                
                 println!("Executing SUB n at PC={:#06x}", self.pc);
             }
             0xD7 => { // RST 10H
@@ -1222,9 +1348,24 @@ impl Cpu
             }
             0xDE => { // SBC A, n
                 let n = self.fetch(memory);
-                let (result, carry) = self.a.overflowing_sub(n.wrapping_add(self.f >> 4));
-                self.a = result;
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+                let carry_bit = (self.f & 0x10) >> 4;  // Get current carry flag
+                
+                // Store original A for comparison
+                let original_a = self.a;
+                let total_subtract = n.wrapping_add(carry_bit);
+                
+                // Borrow occurs if A < (n + carry)
+                let borrow = original_a < total_subtract;
+                
+                // Perform subtraction with carry
+                self.a = original_a.wrapping_sub(total_subtract);
+                
+                // Set flags
+                self.f = 0;
+                if self.a == 0 { self.f |= 0x80; }  // Z flag
+                self.f |= 0x40;                      // N flag always set for subtraction
+                if borrow { self.f |= 0x10; }        // C flag if borrow needed
+                
                 println!("Executing SBC A, n at PC={:#06x}", self.pc);
             }
             0xDF => { // RST 18H
@@ -1354,8 +1495,19 @@ impl Cpu
             }
             0xFE => { // CP n
                 let n = self.fetch(memory);
-                let (result, carry) = self.a.overflowing_sub(n);
-                self.f = if result == 0 { 0x80 } else { 0 } | 0x40 | if carry { 0x10 } else { 0 };
+    
+                // Check if borrow needed (for carry flag)
+                let borrow = self.a < n;
+                
+                // Calculate result without changing A
+                let result = self.a.wrapping_sub(n);
+                
+                // Set flags
+                self.f = 0;
+                if result == 0 { self.f |= 0x80; }  // Z flag
+                self.f |= 0x40;                      // N flag always set for subtraction
+                if borrow { self.f |= 0x10; }        // C flag if borrow needed
+                
                 println!("Executing CP n at PC={:#06x}", self.pc);
             }
             0xFF => { // RST 38H
@@ -1370,11 +1522,317 @@ impl Cpu
         }
     }
 
-    pub fn step(&mut self, memory: &mut [u8]) 
+    pub fn execute_cb(&mut self, cb_opcode: u8, memory: &mut [u8]) -> u8 
     {
-        let opcode = self.fetch(memory);
-        println!("Fetching opcode {:#04x} at PC={:#06x}", opcode, self.pc);
-        self.execute(opcode, memory);
+        println!("Executing CB opcode: {:#04x}, PC: {:#06x}", cb_opcode, self.pc);
+        let cycles = match cb_opcode 
+        {
+            // RLC - Rotate Left Circular
+            0x00..=0x07 => {
+                let reg = cb_opcode & 0x07;
+                self.rlc_r(reg, memory)
+            },
+            
+            // RRC - Rotate Right Circular
+            0x08..=0x0F => {
+                let reg = cb_opcode & 0x07;
+                self.rrc_r(reg, memory)
+            },
+            
+            // RL - Rotate Left through Carry
+            0x10..=0x17 => {
+                let reg = cb_opcode & 0x07;
+                self.rl_r(reg, memory)
+            },
+            
+            // RR - Rotate Right through Carry
+            0x18..=0x1F => {
+                let reg = cb_opcode & 0x07;
+                self.rr_r(reg, memory)
+            },
+            
+            // SLA - Shift Left Arithmetic
+            0x20..=0x27 => {
+                let reg = cb_opcode & 0x07;
+                self.sla_r(reg, memory)
+            },
+            
+            // SRA - Shift Right Arithmetic
+            0x28..=0x2F => {
+                let reg = cb_opcode & 0x07;
+                self.sra_r(reg, memory)
+            },
+            
+            // SWAP - Swap nibbles
+            0x30..=0x37 => {
+                let reg = cb_opcode & 0x07;
+                self.swap_r(reg, memory)
+            },
+            
+            // SRL - Shift Right Logical
+            0x38..=0x3F => {
+                let reg = cb_opcode & 0x07;
+                self.srl_r(reg, memory)
+            },
+            
+            // BIT - Test bit
+            0x40..=0x7F => {
+                let bit = (cb_opcode - 0x40) >> 3;
+                let reg = cb_opcode & 0x07;
+                self.bit_r(bit, reg, memory)
+            },
+            
+            // RES - Reset bit
+            0x80..=0xBF => {
+                let bit = (cb_opcode - 0x80) >> 3;
+                let reg = cb_opcode & 0x07;
+                self.res_r(bit, reg, memory)
+            },
+            
+            // SET - Set bit
+            0xC0..=0xFF => {
+                let bit = (cb_opcode - 0xC0) >> 3;
+                let reg = cb_opcode & 0x07;
+                self.set_r(bit, reg, memory)
+            },
+        };
+        cycles
     }
+
+    fn get_register(&mut self, reg_code: u8, memory: &[u8]) -> u8 
+    {
+        match reg_code 
+        {
+            0 => self.b,
+            1 => self.c,
+            2 => self.d,
+            3 => self.e,
+            4 => self.h,
+            5 => self.l,
+            6 => {
+                let address = ((self.h as u16) << 8) | (self.l as u16);
+                memory[address as usize]
+            },
+            7 => self.a,
+            _ => panic!("Invalid register code"),
+        }
+    }
+    
+    fn set_register(&mut self, reg_code: u8, value: u8, memory: &mut [u8]) 
+    {
+        match reg_code 
+        {
+            0 => self.b = value,
+            1 => self.c = value,
+            2 => self.d = value,
+            3 => self.e = value,
+            4 => self.h = value,
+            5 => self.l = value,
+            6 => {
+                let address = ((self.h as u16) << 8) | (self.l as u16);
+                memory[address as usize] = value;
+            },
+            7 => self.a = value,
+            _ => panic!("Invalid register code"),
+        }
+    }  
+
+    // Rotate Left with Carry
+fn rlc_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let carry = (value & 0x80) >> 7;  // Bit 7 becomes carry
+    let result = (value << 1) | carry;  // Rotate left, with bit 7 becoming bit 0
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }  // Z flag
+    if carry == 1 { self.f |= 0x10; }   // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }  // (HL) takes 16 cycles, registers take 8
+}
+
+// Rotate Right with Carry
+fn rrc_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let carry = value & 0x01;  // Bit 0 becomes carry
+    let result = (value >> 1) | (carry << 7);  // Rotate right, with bit 0 becoming bit 7
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }  // Z flag
+    if carry == 1 { self.f |= 0x10; }   // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Rotate Left through Carry
+fn rl_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let old_carry = (self.f & 0x10) >> 4;  // Get current carry flag
+    let new_carry = (value & 0x80) >> 7;   // Bit 7 becomes new carry
+    let result = (value << 1) | old_carry;  // Rotate left through carry
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }    // Z flag
+    if new_carry == 1 { self.f |= 0x10; }  // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Rotate Right through Carry
+fn rr_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let old_carry = (self.f & 0x10) >> 4;  // Get current carry flag
+    let new_carry = value & 0x01;          // Bit 0 becomes new carry
+    let result = (value >> 1) | (old_carry << 7);  // Rotate right through carry
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }    // Z flag
+    if new_carry == 1 { self.f |= 0x10; }  // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Shift Left Arithmetic
+fn sla_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let carry = (value & 0x80) >> 7;  // Bit 7 becomes carry
+    let result = value << 1;          // Shift left, bit 0 becomes 0
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }  // Z flag
+    if carry == 1 { self.f |= 0x10; }   // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Shift Right Arithmetic (preserves sign bit)
+fn sra_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let carry = value & 0x01;        // Bit 0 becomes carry
+    let bit7 = value & 0x80;         // Preserve bit 7 (sign bit)
+    let result = (value >> 1) | bit7;  // Shift right, keeping bit 7 the same
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }  // Z flag
+    if carry == 1 { self.f |= 0x10; }   // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Swap upper and lower nibbles
+fn swap_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let result = ((value & 0x0F) << 4) | ((value & 0xF0) >> 4);  // Swap nibbles
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }  // Z flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Shift Right Logical
+fn srl_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let carry = value & 0x01;  // Bit 0 becomes carry
+    let result = value >> 1;   // Shift right, bit 7 becomes 0
+    
+    self.set_register(reg_code, result, memory);
+    
+    // Set flags
+    self.f = 0;  // Clear all flags
+    if result == 0 { self.f |= 0x80; }  // Z flag
+    if carry == 1 { self.f |= 0x10; }   // C flag
+    
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Test bit
+fn bit_r(&mut self, bit: u8, reg_code: u8, memory: &[u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let is_bit_set = (value & (1 << bit)) != 0;
+   
+    // Set flags
+    self.f &= 0x10;          // Preserve C flag, reset others
+    self.f |= 0x20;          // Set H flag
+    if !is_bit_set {
+        self.f |= 0x80;      // Set Z flag if bit is 0
+    }
+   
+    if reg_code == 6 { 12 } else { 8 }
+}
+
+// Reset (clear) bit
+fn res_r(&mut self, bit: u8, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let result = value & !(1 << bit);  // Clear the specified bit
+   
+    self.set_register(reg_code, result, memory);
+   
+    // No flags affected
+   
+    if reg_code == 6 { 16 } else { 8 }
+}
+
+// Set bit
+fn set_r(&mut self, bit: u8, reg_code: u8, memory: &mut [u8]) -> u8 
+{
+    let value = self.get_register(reg_code, memory);
+    let result = value | (1 << bit);  // Set the specified bit
+   
+    self.set_register(reg_code, result, memory);
+   
+    // No flags affected
+   
+    if reg_code == 6 { 16 } else { 8 }
+}
+pub fn step(&mut self, memory: &mut [u8]) -> bool {
+    static mut INSTRUCTION_COUNT: u32 = 0;
+    
+    unsafe {
+        INSTRUCTION_COUNT += 1;
+        if INSTRUCTION_COUNT > 10000000 {  // 10 million instructions max
+            println!("Reached maximum instruction count - possible infinite loop");
+            return false;
+        }
+    }
+    
+    if self.halted {
+        return false;
+    }
+    
+    let opcode = self.fetch(memory);
+    self.execute(opcode, memory);
+    true
+}
 }
 
