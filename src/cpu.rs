@@ -1,3 +1,5 @@
+use crate::mmu::MMU;
+
 #[derive(Debug, Default)]
 #[allow(dead_code)]
 pub struct Cpu 
@@ -40,46 +42,49 @@ impl Cpu
         }
     }
 
-    pub fn fetch(&mut self, memory: &[u8]) -> u8 
+    pub fn fetch(&mut self, mmu: &MMU) -> u8 
     {
-        let opcode = memory[self.pc as usize];
+        let opcode = mmu.read_byte(self.pc);
         println!("Fetching opcode {:#04x} at PC={:#06x}", opcode, self.pc);
         println!("Fetch: Reading byte at PC={:#06x}, value={:#04x}", self.pc, opcode);
         self.pc = self.pc.wrapping_add(1);  // Move to the next instruction
         opcode
     }
 
-    pub fn push(&mut self, memory: &mut [u8], value: u8) 
+    pub fn push(&mut self, mmu: &mut MMU, value: u8) 
     {
         self.sp = self.sp.wrapping_sub(1); // Decrement SP before writing
-        memory[self.sp as usize] = value;
+        mmu.write_byte(self.sp, value);
     }
 
-    pub fn pop(&mut self, memory: &[u8]) -> u8 
+    pub fn pop(&mut self, mmu: &mut MMU) -> u8 
     {
-        let value = memory[self.sp as usize];
+        let value = mmu.read_byte(self.sp);
         self.sp = self.sp.wrapping_add(1); // Increment SP after reading
         value
     }
 
-    pub fn execute(&mut self, opcode: u8, memory: &mut [u8]) 
+    pub fn execute(&mut self, opcode: u8, mmu: &mut MMU) -> u8
     {
         match opcode 
         {
             0x00 => { // NOP (No Operation)
                 println!("Executing NOP at PCC={:#06x}", self.pc);
+                4 // NOP takes 4 cycles
             }
             0x01 => { // LD BC, nn
 
-                self.c = memory[self.pc as usize];
-                self.b = memory[self.pc as usize + 1];
+                self.c = mmu.read_byte(self.pc);
+                self.b = mmu.read_byte(self.pc + 1);
                 self.pc += 2;
                 println!("Executing LD BC, {:#04x}{:#04x} at PC={:#06x}", self.b, self.c, self.pc);
+                12 // LD BC, nn takes 12 cycles
             }
             0x02 => { // LD (BC), A
                 let addr = (self.b as u16) << 8 | self.c as u16;
-                memory[addr as usize] = self.a;
+                mmu.write_byte(addr, self.a);
                 println!("Executing LD (BC), A at PC={:#06x}", self.pc);
+                8 // LD (BC), A takes 8 cycles
             }
             0x03 => { // INC BC
                 let bc = ((self.b as u16) << 8 | self.c as u16).wrapping_add(1);
@@ -96,7 +101,7 @@ impl Cpu
                 println!("Executing DEC B at PC={:#06x}", self.pc);
             }
             0x06 => { // LD B, n
-                self.b = memory[self.pc as usize];
+                self.b = mmu.read_byte(self.pc);
                 self.pc += 1;
                 println!("Executing LD B, {:#04x} at PC={:#06x}", self.b, self.pc);
             }
@@ -107,7 +112,7 @@ impl Cpu
                 println!("Executing RLCA at PC={:#06x}", self.pc);
             }
             0x08 => { // LD (nn), SP
-                let addr = (memory[self.pc as usize + 1] as u16) << 8 | memory[self.pc as usize] as u16;
+                let addr = (mmu.read_byte(self.pc + 1)) << 8 | mmu.read_byte(self.pc);
                 memory[addr as usize] = self.sp as u8;
                 memory[(addr + 1) as usize] = (self.sp >> 8) as u8;
                 self.pc += 2;
@@ -1735,7 +1740,7 @@ impl Cpu
         }
     }
 
-    pub fn execute_cb(&mut self, cb_opcode: u8, memory: &mut [u8]) -> u8 
+    pub fn execute_cb(&mut self, cb_opcode: u8, mmu: &mut MMU) -> u8 
     {
         println!("Executing CB opcode: {:#04x}, PC: {:#06x}", cb_opcode, self.pc);
         let cycles = match cb_opcode 
@@ -1812,7 +1817,7 @@ impl Cpu
         cycles
     }
 
-    fn get_register(&mut self, reg_code: u8, memory: &[u8]) -> u8 
+    fn get_register(&mut self, reg_code: u8, mmu: &MMU) -> u8 
     {
         match reg_code 
         {
@@ -1831,7 +1836,7 @@ impl Cpu
         }
     }
     
-    fn set_register(&mut self, reg_code: u8, value: u8, memory: &mut [u8]) 
+    fn set_register(&mut self, reg_code: u8, value: u8, mmu: &MMU) 
     {
         match reg_code 
         {
@@ -1851,192 +1856,192 @@ impl Cpu
     }  
 
     // Rotate Left with Carry
-fn rlc_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let carry = (value & 0x80) >> 7;  // Bit 7 becomes carry
-    let result = (value << 1) | carry;  // Rotate left, with bit 7 becoming bit 0
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }  // Z flag
-    if carry == 1 { self.f |= 0x10; }   // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }  // (HL) takes 16 cycles, registers take 8
-}
-
-// Rotate Right with Carry
-fn rrc_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let carry = value & 0x01;  // Bit 0 becomes carry
-    let result = (value >> 1) | (carry << 7);  // Rotate right, with bit 0 becoming bit 7
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }  // Z flag
-    if carry == 1 { self.f |= 0x10; }   // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Rotate Left through Carry
-fn rl_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let old_carry = (self.f & 0x10) >> 4;  // Get current carry flag
-    let new_carry = (value & 0x80) >> 7;   // Bit 7 becomes new carry
-    let result = (value << 1) | old_carry;  // Rotate left through carry
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }    // Z flag
-    if new_carry == 1 { self.f |= 0x10; }  // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Rotate Right through Carry
-fn rr_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let old_carry = (self.f & 0x10) >> 4;  // Get current carry flag
-    let new_carry = value & 0x01;          // Bit 0 becomes new carry
-    let result = (value >> 1) | (old_carry << 7);  // Rotate right through carry
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }    // Z flag
-    if new_carry == 1 { self.f |= 0x10; }  // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Shift Left Arithmetic
-fn sla_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let carry = (value & 0x80) >> 7;  // Bit 7 becomes carry
-    let result = value << 1;          // Shift left, bit 0 becomes 0
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }  // Z flag
-    if carry == 1 { self.f |= 0x10; }   // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Shift Right Arithmetic (preserves sign bit)
-fn sra_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let carry = value & 0x01;        // Bit 0 becomes carry
-    let bit7 = value & 0x80;         // Preserve bit 7 (sign bit)
-    let result = (value >> 1) | bit7;  // Shift right, keeping bit 7 the same
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }  // Z flag
-    if carry == 1 { self.f |= 0x10; }   // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Swap upper and lower nibbles
-fn swap_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let result = ((value & 0x0F) << 4) | ((value & 0xF0) >> 4);  // Swap nibbles
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }  // Z flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Shift Right Logical
-fn srl_r(&mut self, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let carry = value & 0x01;  // Bit 0 becomes carry
-    let result = value >> 1;   // Shift right, bit 7 becomes 0
-    
-    self.set_register(reg_code, result, memory);
-    
-    // Set flags
-    self.f = 0;  // Clear all flags
-    if result == 0 { self.f |= 0x80; }  // Z flag
-    if carry == 1 { self.f |= 0x10; }   // C flag
-    
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Test bit
-fn bit_r(&mut self, bit: u8, reg_code: u8, memory: &[u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let is_bit_set = (value & (1 << bit)) != 0;
-   
-    // Set flags
-    self.f &= 0x10;          // Preserve C flag, reset others
-    self.f |= 0x20;          // Set H flag
-    if !is_bit_set {
-        self.f |= 0x80;      // Set Z flag if bit is 0
+    fn rlc_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let carry = (value & 0x80) >> 7;  // Bit 7 becomes carry
+        let result = (value << 1) | carry;  // Rotate left, with bit 7 becoming bit 0
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }  // Z flag
+        if carry == 1 { self.f |= 0x10; }   // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }  // (HL) takes 16 cycles, registers take 8
     }
-   
-    if reg_code == 6 { 12 } else { 8 }
-}
 
-// Reset (clear) bit
-fn res_r(&mut self, bit: u8, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let result = value & !(1 << bit);  // Clear the specified bit
-   
-    self.set_register(reg_code, result, memory);
-   
-    // No flags affected
-   
-    if reg_code == 6 { 16 } else { 8 }
-}
-
-// Set bit
-fn set_r(&mut self, bit: u8, reg_code: u8, memory: &mut [u8]) -> u8 
-{
-    let value = self.get_register(reg_code, memory);
-    let result = value | (1 << bit);  // Set the specified bit
-   
-    self.set_register(reg_code, result, memory);
-   
-    // No flags affected
-   
-    if reg_code == 6 { 16 } else { 8 }
-}
-pub fn step(&mut self, memory: &mut [u8]) -> bool 
-{
-    if self.halted {
-        return false;
+    // Rotate Right with Carry
+    fn rrc_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let carry = value & 0x01;  // Bit 0 becomes carry
+        let result = (value >> 1) | (carry << 7);  // Rotate right, with bit 0 becoming bit 7
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }  // Z flag
+        if carry == 1 { self.f |= 0x10; }   // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }
     }
+
+    // Rotate Left through Carry
+    fn rl_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let old_carry = (self.f & 0x10) >> 4;  // Get current carry flag
+        let new_carry = (value & 0x80) >> 7;   // Bit 7 becomes new carry
+        let result = (value << 1) | old_carry;  // Rotate left through carry
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }    // Z flag
+        if new_carry == 1 { self.f |= 0x10; }  // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Rotate Right through Carry
+    fn rr_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let old_carry = (self.f & 0x10) >> 4;  // Get current carry flag
+        let new_carry = value & 0x01;          // Bit 0 becomes new carry
+        let result = (value >> 1) | (old_carry << 7);  // Rotate right through carry
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }    // Z flag
+        if new_carry == 1 { self.f |= 0x10; }  // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Shift Left Arithmetic
+    fn sla_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let carry = (value & 0x80) >> 7;  // Bit 7 becomes carry
+        let result = value << 1;          // Shift left, bit 0 becomes 0
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }  // Z flag
+        if carry == 1 { self.f |= 0x10; }   // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Shift Right Arithmetic (preserves sign bit)
+    fn sra_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let carry = value & 0x01;        // Bit 0 becomes carry
+        let bit7 = value & 0x80;         // Preserve bit 7 (sign bit)
+        let result = (value >> 1) | bit7;  // Shift right, keeping bit 7 the same
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }  // Z flag
+        if carry == 1 { self.f |= 0x10; }   // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Swap upper and lower nibbles
+    fn swap_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let result = ((value & 0x0F) << 4) | ((value & 0xF0) >> 4);  // Swap nibbles
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }  // Z flag
+        
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Shift Right Logical
+    fn srl_r(&mut self, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let carry = value & 0x01;  // Bit 0 becomes carry
+        let result = value >> 1;   // Shift right, bit 7 becomes 0
+        
+        self.set_register(reg_code, result, memory);
+        
+        // Set flags
+        self.f = 0;  // Clear all flags
+        if result == 0 { self.f |= 0x80; }  // Z flag
+        if carry == 1 { self.f |= 0x10; }   // C flag
+        
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Test bit
+    fn bit_r(&mut self, bit: u8, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let is_bit_set = (value & (1 << bit)) != 0;
     
-    let opcode = self.fetch(memory);
-    self.execute(opcode, memory);
-    true
-}
+        // Set flags
+        self.f &= 0x10;          // Preserve C flag, reset others
+        self.f |= 0x20;          // Set H flag
+        if !is_bit_set {
+            self.f |= 0x80;      // Set Z flag if bit is 0
+        }
+    
+        if reg_code == 6 { 12 } else { 8 }
+    }
+
+    // Reset (clear) bit
+    fn res_r(&mut self, bit: u8, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let result = value & !(1 << bit);  // Clear the specified bit
+    
+        self.set_register(reg_code, result, memory);
+    
+        // No flags affected
+    
+        if reg_code == 6 { 16 } else { 8 }
+    }
+
+    // Set bit
+    fn set_r(&mut self, bit: u8, reg_code: u8, mmu: &MMU) -> u8 
+    {
+        let value = self.get_register(reg_code, memory);
+        let result = value | (1 << bit);  // Set the specified bit
+    
+        self.set_register(reg_code, result, memory);
+    
+        // No flags affected
+    
+        if reg_code == 6 { 16 } else { 8 }
+    }
+    pub fn step(&mut self, mmu: &mut MMU) -> bool 
+    {
+        if self.halted {
+            return false;
+        }
+        
+        let opcode = self.fetch(mmu);
+        self.execute(opcode, mmu);
+        true
+    }
 }
 
