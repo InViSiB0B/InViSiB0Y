@@ -28,11 +28,41 @@ fn main()
     // Run the emulation
     loop 
     {
+        static mut LOOP_COUNT: usize = 0;
+
+        if cpu.pc == 0x0213
+        {
+            unsafe
+            {
+                LOOP_COUNT += 1;
+                if LOOP_COUNT > 1000
+                {
+                    // Force carry flag
+                    cpu.f |= 0x10;
+                    println!("DEBUG: Forcing carry flag to exit loop");
+                }
+            } 
+        }
+
         // Execute one CPU instruction
-        if !cpu.step(&mut mmu)
+        let (running, _cycles) = cpu.step(&mut mmu);
+        if !running
         {
             println!("CPU halted or error detected");
             break
+        }
+
+        if cpu.pc == 0x0213 {
+            println!("DEBUG: At the loop start address. A={:#04x}, F={:#04x}", cpu.a, cpu.f);
+        }
+
+        if cpu.pc == 0x0213 || cpu.pc == 0x0214 || cpu.pc == 0x0215
+        {
+            println!("Memory at 0x0213: {:#04x}", mmu.read_byte(0x0213));
+            println!("Memory at 0x0214: {:#04x}", mmu.read_byte(0x0214));
+            println!("Memory at 0x0215: {:#04x}", mmu.read_byte(0x0215));
+            println!("Memory at 0x0216: {:#04x}", mmu.read_byte(0x0216));
+            println!("Memory at 0x0217: {:#04x}", mmu.read_byte(0x0217));
         }
 
         instructions_executed = instructions_executed.wrapping_add(1);

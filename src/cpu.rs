@@ -445,7 +445,7 @@ impl Cpu
                 let offset = mmu.read_byte(self.pc) as i8;
                 self.pc = self.pc.wrapping_add(1);
                 
-                // Explicitly check bit 4 (carry flag)
+                // Carry flag is bit 4 (0x10)
                 let carry_set = (self.f & 0x10) != 0;
                 println!("JR NC: F={:#04x}, carry_set={}, offset={}", self.f, carry_set, offset);
                 
@@ -489,7 +489,7 @@ impl Cpu
             }
             0x34 => { // INC (HL)
                 let addr = (self.h as u16) << 8 | self.l as u16;
-                let value = mmu.read_byte(self.pc).wrapping_add(1);
+                let value = mmu.read_byte(addr).wrapping_add(1);
                 mmu.write_byte(addr, value);
                 println!("Executing INC (HL) at PC={:#06x}", self.pc);
                 12 // INC (HL) takes 12 cycles
@@ -539,7 +539,7 @@ impl Cpu
             }
             0x3A => { // LD A, (HL-)
                 let addr = (self.h as u16) << 8 | self.l as u16;
-                self.a = mmu.read_byte(self.pc);
+                self.a = mmu.read_byte(addr);
                 let hl = addr.wrapping_sub(1);
                 self.h = (hl >> 8) as u8;
                 self.l = hl as u8;
@@ -1720,15 +1720,16 @@ impl Cpu
                 }
             }
             0xCB => { // Prefix CB
-
-                // Fetch the next byte after CB using fetch(), not direct memory access
+                // Fetch the next byte after CB using fetch()
                 let cb_opcode = self.fetch(mmu);  // This will get the byte and increment PC
-
-                if self.debug_mode { println!("Executing CB opcode {:#04x} at PC={:#06x}", cb_opcode, self.pc - 1); } 
-
-                // Execute the CB-prefixed instruction and return its cycles
-                 let _ = self.execute_cb(cb_opcode, mmu);
-                 4 // Prefix CB takes 4 cycles
+                
+                if self.debug_mode { println!("Executing CB opcode {:#04x} at PC={:#06x}", cb_opcode, self.pc - 1); }
+                
+                // Execute the CB-prefixed instruction
+                let cb_cycles = self.execute_cb(cb_opcode, mmu);
+                
+                // The total cycles is 4 (for CB prefix) plus whatever cycles the CB instruction takes
+                4 + cb_cycles // Return the combined cycle count
             }
             0xCC => { // CALL Z, nn
                 let lo = self.fetch(mmu);
@@ -1863,7 +1864,17 @@ impl Cpu
                 if (a & 0x0F) < (n & 0x0F) { self.f |= 0x20; }
                 
                 // Set C flag if borrow needed
-                if a < n { self.f |= 0x10; }
+                if a < n 
+                { 
+                    self.f |= 0x10; 
+                    println!("Setting carry flag because {} < {}", a, n);
+                }
+
+                if a < 0x06 
+                {
+                    println!("CRITICAL: A={:#04x} < n={:#04x}, this should set carry!", a, n);
+                    println!("         After SUB: A={:#04x}, F={:#04x}", self.a, self.f);
+                }
                 
                 println!("SUB n: A={:#04x}, n={:#04x}, result={:#04x}, a<n={}, half_borrow={}, F={:#04x}", 
                         a, n, self.a, a < n, (a & 0x0F) < (n & 0x0F), self.f);
@@ -2424,15 +2435,15 @@ impl Cpu
     
         if reg_code == 6 { 16 } else { 8 }
     }
-    pub fn step(&mut self, mmu: &mut MMU) -> bool 
+    pub fn step(&mut self, mmu: &mut MMU) -> (bool, u8) 
     {
         if self.halted {
-            return false;
+            return (false, 0);
         }
         
         let opcode = self.fetch(mmu);
-        self.execute(opcode, mmu);
-        true
+        let cycles = self.execute(opcode, mmu);
+        (true, cycles)
     }
 }
 

@@ -171,7 +171,7 @@ impl MMU
                         if self.io[0x50] & 0x01 == 0
                         {
                             // ROM banking mode
-                            self.ram_bank = (self.rom_bank & 0x1F) | (bits << 5);
+                            self.rom_bank = (self.rom_bank & 0x1F) | (bits << 5);
                         }
                         else
                         {
@@ -208,9 +208,13 @@ impl MMU
                 self.io[0x02] = value;
 
                 // If bit 7 is set, a transfer is requested
-                if value & 0x80 != 0
+                if value == 0x81 
                 {
-                    println!("Serial transfer: {}", self.io[0x01] as char);
+                    let output_char = self.io[0x01] as char;
+                    println!("Serial transfer: {}", output_char);
+                    
+                    // Reset the transfer flag after handling
+                    self.io[0x02] = 0; // Reset completely
                 }
             },
             // Timer registers
